@@ -92,7 +92,7 @@ input int    InpMaxPositions       = 1;           // Positions simultanees maxi 
 input group "===== Filtres de marche ====="
 input int    InpMaxSpreadPoints    = 45;          // Spread maxi (points, 0 = off)
 input double InpMaxSpreadRiskPct   = 15.0;        // Spread maxi en % de la distance du SL (0 = off)
-input bool   InpUseSession         = true;        // Filtre horaire (heure serveur)
+input bool   InpUseSession         = true;        // Filtre horaire (heure serveur) — bouton 24H/24 sur le panneau
 input int    InpSessionStartHour   = 9;           // Debut de session
 input int    InpSessionEndHour     = 20;          // Fin de session
 input int    InpFridayStopHour     = 18;          // Vendredi : plus d'entree apres (0 = off)
@@ -209,6 +209,8 @@ string    gGuard = "";
 string    gMsg   = "";
 datetime  gCloseConfirmUntil = 0;
 datetime  gAutoConfirmUntil = 0;
+bool      gAllHours = false;          // bouton 24H/24 : ignore les horaires de session
+datetime  gHoursConfirmUntil = 0;
 bool      gTester = false;
 datetime  gLastModify = 0;
 
@@ -346,6 +348,23 @@ void SetAuto(const bool on)
    Print("Trade Desk : ", gMsg);
 }
 
+// Bouton 24H/24 : autorise les entrees a toute heure (les autres garde-fous restent actifs)
+string AllHoursKey()
+{
+   return "XTD_" + _Symbol + "_" + IntegerToString(InpMagic) + "_24H";
+}
+
+void SetAllHours(const bool on)
+{
+   gAllHours = on;
+   gHoursConfirmUntil = 0;
+   if(!gTester)
+      GlobalVariableSet(AllHoursKey(), (on ? 1.0 : 0.0));
+   gMsg = (on ? "24H/24 actif : entrees autorisees a toute heure (spread et news toujours filtres)"
+              : StringFormat("Horaires de session retablis (%02dh-%02dh serveur)", InpSessionStartHour, InpSessionEndHour));
+   Print("Trade Desk : ", gMsg);
+}
+
 //==================================================================//
 // STATISTIQUES DU JOUR
 //==================================================================//
@@ -454,6 +473,8 @@ bool InSession(string &why)
       why = "Week-end";
       return false;
    }
+   if(gAllHours)
+      return true;
    if(InpFridayStopHour > 0 && dt.day_of_week == 5 && dt.hour >= InpFridayStopHour)
    {
       why = "Vendredi soir : plus d'entree";
@@ -1476,7 +1497,8 @@ void UpdatePanel()
       Tile("t_px", pad, y, tw, "PRIX (BID)", (hasTick ? PriceStr(tk.bid) : "-"), COL_TEXT);
       Tile("t_sp", pad + (tw + gap), y, tw, "SPREAD (POINTS)", (hasTick ? DoubleToString(spr, 0) : "-"),
            ((InpMaxSpreadPoints > 0 && spr > InpMaxSpreadPoints) ? COL_RED : COL_GREEN));
-      Tile("t_se", pad + 2 * (tw + gap), y, tw, "SESSION", (inSes ? "OUVERTE" : "FERMEE"), (inSes ? COL_GREEN : COL_AMBER));
+      Tile("t_se", pad + 2 * (tw + gap), y, tw, "SESSION", (inSes ? ((gAllHours && InpUseSession) ? "24H/24" : "OUVERTE") : "FERMEE"),
+           (inSes ? ((gAllHours && InpUseSession) ? COL_AMBER : COL_GREEN) : COL_AMBER));
       Tile("t_nw", pad + 3 * (tw + gap), y, tw, "PROCHAINE NEWS USD", NextNewsText(), (NewsBlocked() ? COL_RED : COL_TEXT));
 
       // Ligne compte
@@ -1515,17 +1537,32 @@ void UpdatePanel()
 
       // Pied
       y += 286 + 10;
-      Button("BTN_BE", "BREAK-EVEN", pad, y, 120, 26, COL_GREY_D, COL_TEXT);
+      Button("BTN_BE", "BREAK-EVEN", pad, y, 100, 26, COL_GREY_D, COL_TEXT);
       bool confirmClose = (gCloseConfirmUntil > TimeLocal());
-      Button("BTN_CA", (confirmClose ? "CONFIRMER ?" : "TOUT FERMER"), pad + 128, y, 120, 26,
+      Button("BTN_CA", (confirmClose ? "CONFIRMER ?" : "TOUT FERMER"), pad + 108, y, 100, 26,
              (confirmClose ? COL_AMBER : COL_RED_D), (confirmClose ? clrBlack : COL_RED));
+
+      // Interrupteur 24H/24 (ignore les horaires de session)
+      string hTxt = "24H/24 : OFF";
+      color  hBg = COL_GREY_D, hFg = COL_TEXT;
+      if(gAllHours || !InpUseSession)
+      {
+         hTxt = "24H/24 : ON";
+         hBg = COL_AMBER; hFg = clrBlack;
+      }
+      else if(gHoursConfirmUntil > TimeLocal())
+      {
+         hTxt = StringFormat("ACTIVER 24H/24 ? (%ds)", (int)(gHoursConfirmUntil - TimeLocal()));
+         hBg = COL_AMBER; hFg = clrBlack;
+      }
+      Button("BTN_HR", hTxt, pad + 216, y, 160, 26, hBg, hFg);
 
       // Interrupteur AUTO / MANUEL
       string auTxt = "TRADING AUTO : OFF";
       color  auBg = COL_GREY_D, auFg = COL_TEXT;
       if(gAuto)
       {
-         auTxt = (gTester ? "TRADING AUTO : ON (TESTER)" : "TRADING AUTO : ON");
+         auTxt = (gTester ? "AUTO : ON (TESTER)" : "TRADING AUTO : ON");
          auBg = COL_BLUE; auFg = clrWhite;
       }
       else if(gAutoConfirmUntil > TimeLocal())
@@ -1533,7 +1570,7 @@ void UpdatePanel()
          auTxt = StringFormat("ACTIVER L'AUTO ? (%ds)", (int)(gAutoConfirmUntil - TimeLocal()));
          auBg = COL_AMBER; auFg = clrBlack;
       }
-      Button("BTN_AU", auTxt, PANEL_W - pad - 200, y, 200, 26, auBg, auFg);
+      Button("BTN_AU", auTxt, pad + 384, y, inner - 384, 26, auBg, auFg);
 
       string info = (gGuard != "" ? "Blocage : " + gGuard : (gMsg != "" ? gMsg : "Aucun blocage : les signaux valides peuvent etre pris"));
       if(StringLen(info) > 70) info = StringSubstr(info, 0, 70);
@@ -1649,6 +1686,8 @@ int OnInit()
    if(!tester && GlobalVariableCheck(AutoKey()))
       gAuto = (GlobalVariableGet(AutoKey()) > 0.5);
    gAutoConfirmUntil = 0;
+   gAllHours = (!tester && GlobalVariableCheck(AllHoursKey()) && GlobalVariableGet(AllHoursKey()) > 0.5);
+   gHoursConfirmUntil = 0;
    gUI   = (!MQLInfoInteger(MQL_OPTIMIZATION) && (!tester || MQLInfoInteger(MQL_VISUAL_MODE)));
 
    bool ok = true;
@@ -1695,7 +1734,10 @@ void OnDeinit(const int reason)
    EventKillTimer();
    // Parametres modifies, EA retire ou graphique ferme : le reglage "Execution" redevient la reference
    if(!gTester && (reason == REASON_PARAMETERS || reason == REASON_REMOVE || reason == REASON_CHARTCLOSE))
+   {
       GlobalVariableDel(AutoKey());
+      GlobalVariableDel(AllHoursKey());
+   }
    for(int i = 0; i < N_TF; i++)
    {
       ReleaseH(gTF[i].hFast);
@@ -1761,6 +1803,17 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          SetAuto(true);                        // l'activer : 2e clic de confirmation
       else
          gAutoConfirmUntil = now + InpConfirmSeconds;
+   }
+   else if(sparam == OBJ_PREFIX + "BTN_HR")
+   {
+      if(!InpUseSession)
+         gMsg = "Filtre horaire deja desactive dans les parametres";
+      else if(gAllHours)
+         SetAllHours(false);                   // revenir aux horaires : immediat
+      else if(gHoursConfirmUntil > now)
+         SetAllHours(true);                    // 24H/24 : 2e clic de confirmation
+      else
+         gHoursConfirmUntil = now + InpConfirmSeconds;
    }
    else if(sparam == OBJ_PREFIX + "BTN_CA")
    {
